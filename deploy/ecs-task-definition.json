@@ -1,0 +1,106 @@
+{
+  "family": "billflow",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "2048",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "billflow-backend",
+      "image": "ACCOUNT_ID.dkr.ecr.il-central-1.amazonaws.com/billflow-backend:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 5000,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {"name": "NODE_ENV", "value": "production"},
+        {"name": "PORT", "value": "5000"}
+      ],
+      "secrets": [
+        {"name": "DB_HOST", "valueFrom": "arn:aws:secretsmanager:il-central-1:ACCOUNT_ID:secret:billflow/db:host::"},
+        {"name": "DB_USER", "valueFrom": "arn:aws:secretsmanager:il-central-1:ACCOUNT_ID:secret:billflow/db:username::"},
+        {"name": "DB_PASSWORD", "valueFrom": "arn:aws:secretsmanager:il-central-1:ACCOUNT_ID:secret:billflow/db:password::"},
+        {"name": "DB_NAME", "valueFrom": "arn:aws:secretsmanager:il-central-1:ACCOUNT_ID:secret:billflow/db:dbname::"},
+        {"name": "JWT_SECRET", "valueFrom": "arn:aws:secretsmanager:il-central-1:ACCOUNT_ID:secret:billflow/jwt:secret::"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/billflow",
+          "awslogs-region": "il-central-1",
+          "awslogs-stream-prefix": "backend"
+        }
+      },
+      "healthCheck": {
+        "command": ["CMD-SHELL", "wget -q --spider http://localhost:5000/health || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      },
+      "mountPoints": [
+        {
+          "sourceVolume": "uploads",
+          "containerPath": "/app/uploads"
+        },
+        {
+          "sourceVolume": "output",
+          "containerPath": "/app/output"
+        }
+      ]
+    },
+    {
+      "name": "billflow-frontend",
+      "image": "ACCOUNT_ID.dkr.ecr.il-central-1.amazonaws.com/billflow-frontend:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 80,
+          "protocol": "tcp"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/billflow",
+          "awslogs-region": "il-central-1",
+          "awslogs-stream-prefix": "frontend"
+        }
+      },
+      "healthCheck": {
+        "command": ["CMD-SHELL", "wget -q --spider http://localhost:80 || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 30
+      },
+      "dependsOn": [
+        {
+          "containerName": "billflow-backend",
+          "condition": "HEALTHY"
+        }
+      ]
+    }
+  ],
+  "volumes": [
+    {
+      "name": "uploads",
+      "efsVolumeConfiguration": {
+        "fileSystemId": "fs-XXXXXXXX",
+        "rootDirectory": "/uploads"
+      }
+    },
+    {
+      "name": "output",
+      "efsVolumeConfiguration": {
+        "fileSystemId": "fs-XXXXXXXX",
+        "rootDirectory": "/output"
+      }
+    }
+  ]
+}

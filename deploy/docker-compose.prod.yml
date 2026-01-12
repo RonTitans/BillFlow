@@ -1,0 +1,94 @@
+# BillFlow Production Docker Compose
+# For AWS ECS Deployment
+
+version: '3.8'
+
+services:
+  # PostgreSQL Database (Use AWS RDS in production for better reliability)
+  billflow-postgres:
+    image: postgres:15-alpine
+    container_name: billflow-postgres
+    restart: always
+    environment:
+      POSTGRES_DB: ${DB_NAME:-billflow_db}
+      POSTGRES_USER: ${DB_USER:-billflow_admin}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - billflow-postgres-data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-billflow_admin} -d ${DB_NAME:-billflow_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: awslogs
+      options:
+        awslogs-group: /ecs/billflow
+        awslogs-region: ${AWS_REGION:-il-central-1}
+        awslogs-stream-prefix: postgres
+
+  # Node.js Backend
+  billflow-backend:
+    image: ${ECR_REGISTRY}/billflow-backend:${IMAGE_TAG:-latest}
+    container_name: billflow-backend
+    restart: always
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      DB_HOST: ${DB_HOST:-billflow-postgres}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-billflow_db}
+      DB_USER: ${DB_USER:-billflow_admin}
+      DB_PASSWORD: ${DB_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      FRONTEND_URL: ${FRONTEND_URL}
+    volumes:
+      - billflow-uploads:/app/uploads
+      - billflow-output:/app/output
+      - billflow-logs:/app/logs
+    depends_on:
+      billflow-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: awslogs
+      options:
+        awslogs-group: /ecs/billflow
+        awslogs-region: ${AWS_REGION:-il-central-1}
+        awslogs-stream-prefix: backend
+
+  # React Frontend (Nginx)
+  billflow-frontend:
+    image: ${ECR_REGISTRY}/billflow-frontend:${IMAGE_TAG:-latest}
+    container_name: billflow-frontend
+    restart: always
+    ports:
+      - "80:80"
+    depends_on:
+      - billflow-backend
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: awslogs
+      options:
+        awslogs-group: /ecs/billflow
+        awslogs-region: ${AWS_REGION:-il-central-1}
+        awslogs-stream-prefix: frontend
+
+networks:
+  default:
+    name: billflow-network
+
+volumes:
+  billflow-postgres-data:
+  billflow-uploads:
+  billflow-output:
+  billflow-logs:

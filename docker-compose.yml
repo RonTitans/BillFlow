@@ -1,0 +1,77 @@
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: rishon-postgres
+    environment:
+      POSTGRES_DB: rishon_billing
+      POSTGRES_USER: rishon_admin
+      POSTGRES_PASSWORD: SecurePass123
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - rishon-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rishon_admin"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Backend API Server
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: rishon-backend
+    environment:
+      NODE_ENV: development
+      PORT: 5000
+      JWT_SECRET: your-super-secret-jwt-key-change-this
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: rishon_billing
+      DB_USER: rishon_admin
+      DB_PASSWORD: SecurePass123
+      UPLOAD_DIR: /app/uploads
+      OUTPUT_DIR: /app/output
+      FRONTEND_URL: http://localhost:3000
+    volumes:
+      - ./backend:/app
+      - ./uploads:/app/uploads
+      - ./output:/app/output
+      - /app/node_modules
+    ports:
+      - "5000:5000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - rishon-network
+
+  # Frontend React App
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: rishon-frontend
+    environment:
+      VITE_API_URL: http://localhost:5000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - rishon-network
+
+networks:
+  rishon-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
