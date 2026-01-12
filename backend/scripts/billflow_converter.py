@@ -15,8 +15,19 @@ def convert_csv_to_tsv(csv_file, output_dir=None):
     Returns JSON with processing results for the backend.
     """
 
-    # Read CSV
-    df = pd.read_csv(csv_file)
+    # Read CSV with proper encoding for Hebrew files
+    # Try UTF-8-BOM first (common for Excel exports), then UTF-8, then cp1255 (Hebrew Windows)
+    encodings_to_try = ['utf-8-sig', 'utf-8', 'cp1255', 'iso-8859-8']
+    df = None
+    for encoding in encodings_to_try:
+        try:
+            df = pd.read_csv(csv_file, encoding=encoding)
+            break
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+
+    if df is None:
+        raise ValueError(f"Could not read CSV file with any supported encoding: {encodings_to_try}")
 
     # Filter out total rows (rows with NaN document numbers) - handles shadow totals
     df = df[df['Document number'].notna()]
