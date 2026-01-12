@@ -711,10 +711,10 @@ function History() {
                   <Grid item xs={12} sm={6}>
                     <Paper sx={{ p: 2, textAlign: 'center', borderRadius: 2 }}>
                       <Typography variant="h4" color="info.main" fontWeight="bold">
-                        {selectedFile.total_rows?.toLocaleString() || 'לא ידוע'}
+                        {selectedFile.total_rows?.toLocaleString() || '-'}
                       </Typography>
                       <Typography variant="body2" color="text.secondary">
-                        סה"כ שורות
+                        שורות
                       </Typography>
                     </Paper>
                   </Grid>

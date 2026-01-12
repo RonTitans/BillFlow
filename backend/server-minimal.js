@@ -43,8 +43,9 @@ const storage = multer.diskStorage({
   },
   filename: (req, file, cb) => {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const sanitizedName = file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
-    cb(null, `${timestamp}_${sanitizedName}`);
+    // Keep original Hebrew filename but add timestamp
+    const originalName = Buffer.from(file.originalname, 'latin1').toString('utf8');
+    cb(null, `${timestamp}_${originalName}`);
   }
 });
 
@@ -200,9 +201,14 @@ app.post('/api/upload', authenticate, upload.any(), async (req, res) => {
 
     // Get the first uploaded file (we only expect one CSV)
     const file = req.files[0];
-    
+
+    // Decode Hebrew filename properly
+    const decodedFilename = Buffer.from(file.originalname, 'latin1').toString('utf8');
+    console.log('Original filename from browser:', file.originalname);
+    console.log('Decoded filename:', decodedFilename);
+
     // Validate it's a CSV file
-    const fileExtension = file.originalname.split('.').pop().toLowerCase();
+    const fileExtension = decodedFilename.split('.').pop().toLowerCase();
     if (fileExtension !== 'csv') {
       // Delete the uploaded file if it's not CSV
       try {
@@ -213,29 +219,29 @@ app.post('/api/upload', authenticate, upload.any(), async (req, res) => {
       return res.status(400).json({ success: false, message: 'Please upload a CSV file' });
     }
 
-    // Extract billing period from filename
+    // Extract billing period from filename using decoded name
     let billingMonth = null, billingYear = null, billingPeriod = null;
-    
+
     // Pattern 1: "1.25" = January 2025
-    const monthYearMatch = file.originalname.match(/(\d+)\.(\d{2})/);
+    const monthYearMatch = decodedFilename.match(/(\d+)\.(\d{2})/);
     if (monthYearMatch) {
       billingMonth = parseInt(monthYearMatch[1]);
       billingYear = 2000 + parseInt(monthYearMatch[2]);
       billingPeriod = `${billingYear}-${String(billingMonth).padStart(2, '0')}`;
     }
-    
+
     // Pattern 2: Hebrew month names
     const hebrewMonths = {
       'ינואר': 1, 'פברואר': 2, 'מרץ': 3, 'אפריל': 4,
       'מאי': 5, 'יוני': 6, 'יולי': 7, 'אוגוסט': 8,
       'ספטמבר': 9, 'אוקטובר': 10, 'נובמבר': 11, 'דצמבר': 12
     };
-    
+
     for (const [monthName, monthNum] of Object.entries(hebrewMonths)) {
-      if (file.originalname.includes(monthName)) {
+      if (decodedFilename.includes(monthName)) {
         billingMonth = monthNum;
         // Try to extract year
-        const yearMatch = file.originalname.match(/20\d{2}/);
+        const yearMatch = decodedFilename.match(/20\d{2}/);
         billingYear = yearMatch ? parseInt(yearMatch[0]) : new Date().getFullYear();
         billingPeriod = `${billingYear}-${String(billingMonth).padStart(2, '0')}`;
         break;
@@ -243,9 +249,9 @@ app.post('/api/upload', authenticate, upload.any(), async (req, res) => {
     }
 
     const result = await pool.query(
-      `INSERT INTO file_uploads (original_filename, file_path, file_size, user_id, billing_month, billing_year, billing_period) 
+      `INSERT INTO file_uploads (original_filename, file_path, file_size, user_id, billing_month, billing_year, billing_period)
        VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, original_filename, file_size, upload_time`,
-      [file.originalname, `uploads/${file.filename}`, file.size, req.user.id, billingMonth, billingYear, billingPeriod]
+      [decodedFilename, `uploads/${file.filename}`, file.size, req.user.id, billingMonth, billingYear, billingPeriod]
     );
 
     res.json({
@@ -299,47 +305,80 @@ app.post('/api/process/:fileId', authenticate, async (req, res) => {
       ['processing', fileId]
     );
 
-    // Process with Python script
-    const scriptPath = path.join(__dirname, 'scripts/transform_final_corrected.py');
+    // Process with BillFlow Python script
+    const scriptPath = path.join(__dirname, 'scripts/billflow_converter.py');
     const inputPath = path.join(__dirname, '..', file.file_path);
     const outputDir = path.join(__dirname, '../output');
-    const outputFilename = `processed_${Date.now()}.xlsx`;
-    const outputPath = path.join(outputDir, outputFilename);
 
     await fs.mkdir(outputDir, { recursive: true });
 
-    const pythonProcess = spawn('python3', [scriptPath, inputPath, outputPath]);
+    const pythonProcess = spawn('python3', [scriptPath, inputPath, outputDir]);
     
     let outputData = '';
     let errorData = '';
 
     pythonProcess.stdout.on('data', (data) => {
-      outputData += data.toString();
+      const chunk = data.toString();
+      console.log('Python stdout:', chunk);
+      outputData += chunk;
     });
 
     pythonProcess.stderr.on('data', (data) => {
-      errorData += data.toString();
+      const chunk = data.toString();
+      console.error('Python stderr:', chunk);
+      errorData += chunk;
     });
 
     pythonProcess.on('close', async (code) => {
       if (code === 0) {
-        // Update database with success
-        await pool.query(
-          `UPDATE file_uploads 
-           SET processing_status = $1, processed_filename = $2, excel_path = $3, processed_time = CURRENT_TIMESTAMP 
-           WHERE id = $4`,
-          ['completed', outputFilename, `output/${outputFilename}`, fileId]
-        );
+        try {
+          // Parse JSON results from billflow_converter.py
+          const results = JSON.parse(outputData);
 
-        res.json({
-          success: true,
-          message: 'File processed successfully',
-          data: {
-            fileId,
-            excelFilename: outputFilename,
-            downloadUrl: `/api/files/download/${fileId}`
-          }
-        });
+          // Update database with success
+          await pool.query(
+            `UPDATE file_uploads
+             SET processing_status = $1, processed_filename = $2, excel_path = $3,
+                 tsv_filename = $4, tsv_path = $5,
+                 csv_total = $6, excel_total = $7, gap_amount = $8,
+                 total_rows = $9, included_rows = $10, perfect_match = $11,
+                 processed_time = CURRENT_TIMESTAMP
+             WHERE id = $12`,
+            ['completed', results.excel_filename, `output/${results.excel_filename}`,
+             results.tsv_filename, `output/${results.tsv_filename}`,
+             results.csv_total, results.tsv_total, results.difference,
+             results.total_rows, results.included_rows, results.perfect_match, fileId]
+          );
+
+          res.json({
+            success: true,
+            message: 'File processed successfully',
+            data: {
+              fileId,
+              excelFilename: results.excel_filename,
+              tsvFilename: results.tsv_filename,
+              csvTotal: results.csv_total,
+              tsvTotal: results.tsv_total,
+              totalWithVat: results.total_with_vat,
+              difference: results.difference,
+              perfectMatch: results.perfect_match,
+              totalRows: results.total_rows,
+              includedRows: results.included_rows,
+              downloadUrl: `/api/files/download/${fileId}`
+            }
+          });
+        } catch (e) {
+          console.error('Failed to parse Python output:', e, outputData);
+          await pool.query(
+            'UPDATE file_uploads SET processing_status = $1, processing_errors = $2 WHERE id = $3',
+            ['error', 'Failed to parse processing results', fileId]
+          );
+          res.status(500).json({
+            success: false,
+            message: 'Failed to parse processing results',
+            error: outputData
+          });
+        }
       } else {
         // Update with error
         await pool.query(
@@ -432,83 +471,76 @@ app.post('/api/process', authenticate, async (req, res) => {
       ['processing', fileId]
     );
 
-    // Process with Python script
-    const scriptPath = path.join(__dirname, 'scripts/transform_final_corrected.py');
+    // Process with BillFlow Python script
+    const scriptPath = path.join(__dirname, 'scripts/billflow_converter.py');
     const inputPath = path.join(__dirname, '..', file.file_path);
     const outputDir = path.join(__dirname, '../output');
-    const outputFilename = `processed_${Date.now()}.xlsx`;
-    const outputPath = path.join(outputDir, outputFilename);
 
     await fs.mkdir(outputDir, { recursive: true });
 
-    const pythonProcess = spawn('python3', [scriptPath, inputPath, outputPath]);
+    const pythonProcess = spawn('python3', [scriptPath, inputPath, outputDir]);
     
     let outputData = '';
     let errorData = '';
 
     pythonProcess.stdout.on('data', (data) => {
-      outputData += data.toString();
+      const chunk = data.toString();
+      console.log('Python stdout:', chunk);
+      outputData += chunk;
     });
 
     pythonProcess.stderr.on('data', (data) => {
-      errorData += data.toString();
+      const chunk = data.toString();
+      console.error('Python stderr:', chunk);
+      errorData += chunk;
     });
 
     pythonProcess.on('close', async (code) => {
       if (code === 0) {
         try {
-          // Parse results if JSON
-          let results = {};
-          try {
-            results = JSON.parse(outputData);
-          } catch (e) {
-            results = { csv_total: 0, excel_total: 0, gap_amount: 0 };
-          }
-          
-          // Update database with success
-          await pool.query(
-            `UPDATE file_uploads 
-             SET processing_status = $1, processed_filename = $2, excel_path = $3, 
-                 csv_total = $4, excel_total = $5, gap_amount = $6, processed_time = CURRENT_TIMESTAMP 
-             WHERE id = $7`,
-            ['completed', outputFilename, `output/${outputFilename}`, 
-             results.csv_total || 0, results.excel_total || 0, results.gap_amount || 0, fileId]
-          );
+          // Parse JSON results from billflow_converter.py
+          const results = JSON.parse(outputData);
 
-          // Generate TSV with proper naming convention
-          const now = new Date();
-          const yearMonth = now.toISOString().slice(0, 7).replace('-', '');
-          const timestamp = now.toISOString().replace(/[-:T]/g, '_').slice(0, 15);
-          const tsvFilename = `invoice_lines - ${yearMonth}_${timestamp}.txt`;
-          const tsvPath = path.join(outputDir, tsvFilename);
-          const tsvScript = path.join(__dirname, 'scripts/convert_to_tsv_simple.py');
-          
-          const tsvProcess = spawn('python3', [tsvScript, outputPath, tsvPath]);
-          
-          tsvProcess.on('close', async (tsvCode) => {
-            if (tsvCode === 0) {
-              await pool.query(
-                'UPDATE file_uploads SET tsv_filename = $1, tsv_path = $2 WHERE id = $3',
-                [tsvFilename, `output/${tsvFilename}`, fileId]
-              );
-            }
-          });
+          // Update database with success including TSV filename
+          await pool.query(
+            `UPDATE file_uploads
+             SET processing_status = $1, processed_filename = $2, excel_path = $3,
+                 tsv_filename = $4, tsv_path = $5,
+                 csv_total = $6, excel_total = $7, gap_amount = $8, processed_time = CURRENT_TIMESTAMP
+             WHERE id = $9`,
+            ['completed', results.excel_filename, `output/${results.excel_filename}`,
+             results.tsv_filename, `output/${results.tsv_filename}`,
+             results.csv_total, results.tsv_total, results.difference, fileId]
+          );
 
           res.json({
             success: true,
             message: 'File processed successfully',
             data: {
               fileId,
-              excelFilename: outputFilename,
-              csvTotal: results.csv_total || 0,
-              excelTotal: results.excel_total || 0,
-              gapAmount: results.gap_amount || 0,
+              excelFilename: results.excel_filename,
+              tsvFilename: results.tsv_filename,
+              csvTotal: results.csv_total,
+              tsvTotal: results.tsv_total,
+              totalWithVat: results.total_with_vat,
+              difference: results.difference,
+              perfectMatch: results.perfect_match,
+              totalRows: results.total_rows,
+              includedRows: results.included_rows,
               downloadUrl: `/api/files/download/${fileId}`
             }
           });
-        } catch (dbError) {
-          console.error('Database update error:', dbError);
-          res.status(500).json({ success: false, message: 'Failed to update results' });
+        } catch (e) {
+          console.error('Failed to parse Python output:', e, outputData);
+          await pool.query(
+            'UPDATE file_uploads SET processing_status = $1, processing_errors = $2 WHERE id = $3',
+            ['error', 'Failed to parse processing results', fileId]
+          );
+          res.status(500).json({
+            success: false,
+            message: 'Failed to parse processing results',
+            error: outputData
+          });
         }
       } else {
         // Update with error
@@ -767,29 +799,41 @@ app.get('/api/analytics/consumption', authenticate, async (req, res) => {
 app.get('/api/dashboard/stats', authenticate, async (req, res) => {
   try {
     const stats = await pool.query(`
-      SELECT 
+      SELECT
         COUNT(*) as total_files,
         COUNT(CASE WHEN processing_status = 'completed' THEN 1 END) as completed_files,
         COUNT(CASE WHEN processing_status = 'error' THEN 1 END) as error_files,
-        COUNT(CASE WHEN processing_status = 'pending' THEN 1 END) as pending_files
+        COUNT(CASE WHEN processing_status = 'pending' THEN 1 END) as pending_files,
+        COUNT(CASE WHEN gap_amount < 1 AND processing_status = 'completed' THEN 1 END) as perfect_matches,
+        COALESCE(SUM(csv_total), 0) as total_amount
       FROM file_uploads
       WHERE user_id = $1
     `, [req.user.id]);
 
     const recentFiles = await pool.query(`
-      SELECT * FROM file_uploads 
-      WHERE user_id = $1 
-      ORDER BY upload_time DESC 
+      SELECT * FROM file_uploads
+      WHERE user_id = $1
+      ORDER BY upload_time DESC
       LIMIT 10
     `, [req.user.id]);
 
-    res.json({
-      success: true,
-      data: {
-        files: stats.rows[0],
-        recentFiles: recentFiles.rows
-      }
-    });
+    // Transform to match frontend expected format
+    const dbStats = stats.rows[0];
+
+    const response = {
+      totalFiles: parseInt(dbStats.total_files) || 0,
+      filesByStatus: {
+        completed: parseInt(dbStats.completed_files) || 0,
+        error: parseInt(dbStats.error_files) || 0,
+        processing: parseInt(dbStats.pending_files) || 0
+      },
+      perfectMatches: parseInt(dbStats.perfect_matches) || 0,
+      totalAmount: parseFloat(dbStats.total_amount) || 0,
+      recentFiles: recentFiles.rows
+    };
+
+    console.log('Dashboard stats response:', JSON.stringify(response, null, 2));
+    res.json(response);
   } catch (error) {
     console.error('Dashboard error:', error);
     res.status(500).json({ success: false, message: 'Failed to get stats' });

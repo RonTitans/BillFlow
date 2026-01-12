@@ -81,10 +81,10 @@ function Layout() {
         <ElectricBolt sx={{ fontSize: 40, ml: 1 }} />
         <Box>
           <Typography variant="h6" component="div" fontWeight="bold">
-            מערכת ניהול חשבונות
+            BillFlow
           </Typography>
           <Typography variant="caption">
-            עיריית ראשון לציון
+            מערכת ניהול חשבונות חשמל
           </Typography>
         </Box>
       </Box>

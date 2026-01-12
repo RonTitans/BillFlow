@@ -93,10 +93,10 @@ function Login() {
               }}
             />
             <Typography variant="h4" component="h1" gutterBottom fontWeight="bold">
-              מערכת ניהול חשבונות חשמל
+              BillFlow
             </Typography>
             <Typography variant="subtitle1" color="text.secondary">
-              עיריית ראשון לציון
+              מערכת ניהול חשבונות חשמל
             </Typography>
           </Box>
 
@@ -118,13 +118,21 @@ function Login() {
               autoFocus
               disabled={loading}
               InputProps={{
-                startAdornment: (
-                  <InputAdornment position="start">
+                endAdornment: (
+                  <InputAdornment position="end">
                     <AccountCircle color="action" />
                   </InputAdornment>
                 ),
               }}
-              sx={{ mb: 2 }}
+              sx={{
+                mb: 2,
+                '& .MuiInputBase-root': {
+                  flexDirection: 'row-reverse'
+                },
+                '& .MuiInputBase-input': {
+                  textAlign: 'right'
+                }
+              }}
             />
 
             <TextField
@@ -150,7 +158,15 @@ function Login() {
                   </InputAdornment>
                 ),
               }}
-              sx={{ mb: 3 }}
+              sx={{
+                mb: 3,
+                '& .MuiInputBase-root': {
+                  flexDirection: 'row-reverse'
+                },
+                '& .MuiInputBase-input': {
+                  textAlign: 'right'
+                }
+              }}
             />
 
             <Button

@@ -337,6 +337,7 @@ def convert_csv_to_tsv(csv_file, output_dir=None):
     csv_total = df['Total cost'].sum()
 
     # Return results as JSON
+    # Return only filenames (not full paths) for backend to construct relative paths
     results = {
         'success': True,
         'csv_total': float(csv_total),
