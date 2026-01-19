@@ -383,10 +383,14 @@ app.post('/api/upload', authenticate, upload.single('csvFile'), async (req, res)
 // Get files
 app.get('/api/files', authenticate, async (req, res) => {
   try {
-    const result = await pool.query(
-      'SELECT * FROM file_uploads WHERE user_id = $1 ORDER BY upload_time DESC',
-      [req.user.id]
-    );
+    // Admin users see all files, regular users see only their own
+    const query = req.user.role === 'admin'
+      ? 'SELECT * FROM file_uploads ORDER BY upload_time DESC'
+      : 'SELECT * FROM file_uploads WHERE user_id = $1 ORDER BY upload_time DESC';
+
+    const params = req.user.role === 'admin' ? [] : [req.user.id];
+    const result = await pool.query(query, params);
+
     res.json({ success: true, data: result.rows });
   } catch (error) {
     console.error('Get files error:', error);
@@ -655,7 +659,8 @@ app.get('/api/dashboard/stats', authenticate, async (req, res) => {
 // Analytics - Main consumption endpoint
 app.get('/api/analytics/consumption', authenticate, async (req, res) => {
   try {
-    const { year = new Date().getFullYear() } = req.query;
+    const yearParam = req.query.year;
+    const year = (yearParam && yearParam !== 'undefined') ? parseInt(yearParam) : new Date().getFullYear();
 
     // Monthly data from site_billing_records for accurate consumption tracking
     const monthlyData = await pool.query(`

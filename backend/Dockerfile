@@ -30,4 +30,4 @@ RUN mkdir -p uploads output logs
 EXPOSE 5000
 
 # Run the application
-CMD ["node", "server-minimal.js"]
+CMD ["node", "server-billflow.js"]
