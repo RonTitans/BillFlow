@@ -652,35 +652,54 @@ app.get('/api/dashboard/stats', authenticate, async (req, res) => {
   }
 });
 
-// Analytics
+// Analytics - Main consumption endpoint
 app.get('/api/analytics/consumption', authenticate, async (req, res) => {
   try {
     const { year = new Date().getFullYear() } = req.query;
 
+    // Monthly data from site_billing_records for accurate consumption tracking
     const monthlyData = await pool.query(`
       SELECT
         billing_period,
         billing_month,
         billing_year,
-        COUNT(*) as file_count,
-        SUM(csv_total) as total_csv,
-        SUM(tsv_total) as total_tsv,
-        SUM(gap_amount) as total_gap,
-        COUNT(CASE WHEN perfect_match = true THEN 1 END) as perfect_matches
-      FROM file_uploads
-      WHERE processing_status = 'completed'
-        AND billing_year = $1
+        COUNT(DISTINCT site_id) as site_count,
+        SUM(total_cost) as total_cost,
+        SUM(peak_consumption) as total_peak_consumption,
+        SUM(offpeak_consumption) as total_offpeak_consumption,
+        SUM(total_consumption) as total_consumption,
+        SUM(total_discount) as total_discount,
+        SUM(kva_cost) as total_kva_cost,
+        SUM(distribution_cost) as total_distribution_cost,
+        SUM(supply_cost) as total_supply_cost
+      FROM site_billing_records
+      WHERE billing_year = $1
       GROUP BY billing_period, billing_month, billing_year
       ORDER BY billing_period
     `, [year]);
 
+    // Overall stats
     const overallStats = await pool.query(`
       SELECT
-        COUNT(*) as total_files,
-        SUM(csv_total) as total_cost,
-        COUNT(CASE WHEN perfect_match = true THEN 1 END) as perfect_matches
-      FROM file_uploads
-      WHERE processing_status = 'completed'
+        COUNT(DISTINCT site_id) as total_sites,
+        SUM(total_cost) as total_cost,
+        SUM(total_consumption) as total_consumption,
+        SUM(peak_consumption) as total_peak,
+        SUM(offpeak_consumption) as total_offpeak,
+        SUM(total_discount) as total_discount,
+        CASE WHEN SUM(total_consumption) > 0
+          THEN SUM(total_cost) / SUM(total_consumption)
+          ELSE 0
+        END as avg_cost_per_kwh
+      FROM site_billing_records
+      WHERE billing_year = $1
+    `, [year]);
+
+    // Available years
+    const yearsResult = await pool.query(`
+      SELECT DISTINCT billing_year
+      FROM site_billing_records
+      ORDER BY billing_year DESC
     `);
 
     res.json({
@@ -688,12 +707,450 @@ app.get('/api/analytics/consumption', authenticate, async (req, res) => {
       data: {
         monthly: monthlyData.rows,
         overall: overallStats.rows[0],
+        availableYears: yearsResult.rows.map(r => r.billing_year),
         currentYear: parseInt(year)
       }
     });
   } catch (error) {
     console.error('Analytics error:', error);
     res.status(500).json({ success: false, message: 'שגיאה בטעינת האנליטיקה' });
+  }
+});
+
+// Analytics - Dashboard KPIs (new endpoint for real business metrics)
+app.get('/api/analytics/dashboard-kpis', authenticate, async (req, res) => {
+  try {
+    // Get the latest available billing period from actual data (not current calendar date)
+    const latestPeriod = await pool.query(`
+      SELECT billing_year, billing_month
+      FROM site_billing_records
+      ORDER BY billing_year DESC, billing_month DESC
+      LIMIT 1
+    `);
+
+    if (latestPeriod.rows.length === 0) {
+      return res.json({
+        success: true,
+        data: {
+          totalMonthlyCost: 0,
+          totalMonthlyConsumption: 0,
+          activeSites: 0,
+          avgCostPerKwh: 0,
+          costTrend: 0,
+          consumptionTrend: 0,
+          currentPeriod: null
+        }
+      });
+    }
+
+    const currentYear = latestPeriod.rows[0].billing_year;
+    const currentMonth = latestPeriod.rows[0].billing_month;
+
+    // Current month stats (latest available period)
+    const currentMonthStats = await pool.query(`
+      SELECT
+        SUM(total_cost) as monthly_cost,
+        SUM(total_consumption) as monthly_consumption,
+        COUNT(DISTINCT site_id) as active_sites,
+        CASE WHEN SUM(total_consumption) > 0
+          THEN SUM(total_cost) / SUM(total_consumption)
+          ELSE 0
+        END as avg_cost_per_kwh
+      FROM site_billing_records
+      WHERE billing_year = $1 AND billing_month = $2
+    `, [currentYear, currentMonth]);
+
+    // Find the previous available period (not just previous calendar month)
+    const prevPeriod = await pool.query(`
+      SELECT billing_year, billing_month
+      FROM site_billing_records
+      WHERE (billing_year < $1) OR (billing_year = $1 AND billing_month < $2)
+      ORDER BY billing_year DESC, billing_month DESC
+      LIMIT 1
+    `, [currentYear, currentMonth]);
+
+    let previous = { monthly_cost: 0, monthly_consumption: 0 };
+    if (prevPeriod.rows.length > 0) {
+      const prevMonthStats = await pool.query(`
+        SELECT
+          SUM(total_cost) as monthly_cost,
+          SUM(total_consumption) as monthly_consumption
+        FROM site_billing_records
+        WHERE billing_year = $1 AND billing_month = $2
+      `, [prevPeriod.rows[0].billing_year, prevPeriod.rows[0].billing_month]);
+      previous = prevMonthStats.rows[0];
+    }
+
+    // Calculate trends
+    const current = currentMonthStats.rows[0];
+
+    const costTrend = previous?.monthly_cost > 0
+      ? ((current?.monthly_cost - previous?.monthly_cost) / previous?.monthly_cost * 100).toFixed(1)
+      : 0;
+    const consumptionTrend = previous?.monthly_consumption > 0
+      ? ((current?.monthly_consumption - previous?.monthly_consumption) / previous?.monthly_consumption * 100).toFixed(1)
+      : 0;
+
+    res.json({
+      success: true,
+      data: {
+        totalMonthlyCost: parseFloat(current?.monthly_cost || 0),
+        totalMonthlyConsumption: parseFloat(current?.monthly_consumption || 0),
+        activeSites: parseInt(current?.active_sites || 0),
+        avgCostPerKwh: parseFloat(current?.avg_cost_per_kwh || 0),
+        costTrend: parseFloat(costTrend),
+        consumptionTrend: parseFloat(consumptionTrend),
+        currentPeriod: `${currentYear}-${String(currentMonth).padStart(2, '0')}`,
+        latestYear: currentYear
+      }
+    });
+  } catch (error) {
+    console.error('Dashboard KPIs error:', error);
+    res.status(500).json({ success: false, message: 'שגיאה בטעינת מדדי הדשבורד' });
+  }
+});
+
+// Analytics - Sites list with aggregated data
+app.get('/api/analytics/sites', authenticate, async (req, res) => {
+  try {
+    const { year, limit = 100, sortBy = 'total_cost', sortOrder = 'DESC' } = req.query;
+
+    // Validate sort parameters
+    const validSortFields = ['total_cost', 'total_consumption', 'peak_consumption', 'site_name'];
+    const validSortOrders = ['ASC', 'DESC'];
+    const safeSortBy = validSortFields.includes(sortBy) ? sortBy : 'total_cost';
+    const safeSortOrder = validSortOrders.includes(sortOrder.toUpperCase()) ? sortOrder.toUpperCase() : 'DESC';
+
+    let whereClause = '';
+    let params = [];
+
+    if (year) {
+      whereClause = 'WHERE billing_year = $1';
+      params.push(year);
+    }
+
+    const sitesData = await pool.query(`
+      SELECT
+        site_name,
+        site_id,
+        meter_number,
+        tariff_type,
+        meter_connection,
+        MAX(kva) as kva,
+        COUNT(DISTINCT billing_period) as billing_periods,
+        SUM(total_cost) as total_cost,
+        SUM(total_consumption) as total_consumption,
+        SUM(peak_consumption) as peak_consumption,
+        SUM(offpeak_consumption) as offpeak_consumption,
+        SUM(total_discount) as total_discount,
+        AVG(total_cost) as avg_monthly_cost,
+        CASE WHEN SUM(total_consumption) > 0
+          THEN (SUM(peak_consumption) / SUM(total_consumption) * 100)
+          ELSE 0
+        END as peak_ratio
+      FROM site_billing_records
+      ${whereClause}
+      GROUP BY site_name, site_id, meter_number, tariff_type, meter_connection
+      ORDER BY ${safeSortBy} ${safeSortOrder}
+      LIMIT $${params.length + 1}
+    `, [...params, limit]);
+
+    res.json({
+      success: true,
+      data: {
+        sites: sitesData.rows,
+        count: sitesData.rows.length
+      }
+    });
+  } catch (error) {
+    console.error('Sites analytics error:', error);
+    res.status(500).json({ success: false, message: 'שגיאה בטעינת נתוני האתרים' });
+  }
+});
+
+// Analytics - Top consumers
+app.get('/api/analytics/top-consumers', authenticate, async (req, res) => {
+  try {
+    const { year, month, limit = 10, metric = 'cost' } = req.query;
+
+    let orderBy = metric === 'consumption' ? 'total_consumption' : 'total_cost';
+    let conditions = [];
+    let params = [];
+    let paramIndex = 1;
+
+    if (year) {
+      conditions.push(`billing_year = $${paramIndex++}`);
+      params.push(year);
+    }
+    if (month) {
+      conditions.push(`billing_month = $${paramIndex++}`);
+      params.push(month);
+    }
+
+    let whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    params.push(limit);
+
+    const topConsumers = await pool.query(`
+      SELECT
+        site_name,
+        site_id,
+        tariff_type,
+        SUM(total_cost) as total_cost,
+        SUM(total_consumption) as total_consumption,
+        SUM(peak_consumption) as peak_consumption,
+        SUM(offpeak_consumption) as offpeak_consumption,
+        CASE WHEN SUM(total_consumption) > 0
+          THEN (SUM(peak_consumption) / SUM(total_consumption) * 100)
+          ELSE 0
+        END as peak_ratio
+      FROM site_billing_records
+      ${whereClause}
+      GROUP BY site_name, site_id, tariff_type
+      ORDER BY ${orderBy} DESC
+      LIMIT $${params.length}
+    `, params);
+
+    res.json({
+      success: true,
+      data: topConsumers.rows
+    });
+  } catch (error) {
+    console.error('Top consumers error:', error);
+    res.status(500).json({ success: false, message: 'שגיאה בטעינת צרכנים גדולים' });
+  }
+});
+
+// Analytics - Consumption breakdown (peak vs off-peak, by tariff, by season)
+app.get('/api/analytics/consumption-breakdown', authenticate, async (req, res) => {
+  try {
+    const { year, month } = req.query;
+    let conditions = [];
+    let params = [];
+    let paramIndex = 1;
+
+    if (year) {
+      conditions.push(`billing_year = $${paramIndex++}`);
+      params.push(year);
+    }
+    if (month) {
+      conditions.push(`billing_month = $${paramIndex++}`);
+      params.push(month);
+    }
+
+    let whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    // Peak vs Off-peak totals
+    const peakBreakdown = await pool.query(`
+      SELECT
+        SUM(peak_consumption) as total_peak,
+        SUM(offpeak_consumption) as total_offpeak,
+        SUM(total_consumption) as total_consumption
+      FROM site_billing_records
+      ${whereClause}
+    `, params);
+
+    // By tariff type
+    const tariffBreakdown = await pool.query(`
+      SELECT
+        tariff_type,
+        COUNT(DISTINCT site_id) as site_count,
+        SUM(total_cost) as total_cost,
+        SUM(total_consumption) as total_consumption
+      FROM site_billing_records
+      ${whereClause}
+      GROUP BY tariff_type
+      ORDER BY total_cost DESC
+    `, params);
+
+    // By season
+    const seasonBreakdown = await pool.query(`
+      SELECT
+        season,
+        SUM(total_cost) as total_cost,
+        SUM(total_consumption) as total_consumption,
+        AVG(total_cost) as avg_cost
+      FROM site_billing_records
+      ${whereClause}
+      GROUP BY season
+      ORDER BY total_cost DESC
+    `, params);
+
+    // Cost components breakdown
+    const costBreakdown = await pool.query(`
+      SELECT
+        SUM(kva_cost) as kva_cost,
+        SUM(distribution_cost) as distribution_cost,
+        SUM(supply_cost) as supply_cost,
+        SUM(consumption_cost_peak + consumption_cost_offpeak) as consumption_cost,
+        SUM(total_discount) as total_discount
+      FROM site_billing_records
+      ${whereClause}
+    `, params);
+
+    const peak = peakBreakdown.rows[0];
+    res.json({
+      success: true,
+      data: {
+        peakOffpeak: {
+          peak: parseFloat(peak?.total_peak || 0),
+          offpeak: parseFloat(peak?.total_offpeak || 0),
+          peakRatio: peak?.total_consumption > 0
+            ? (peak.total_peak / peak.total_consumption * 100).toFixed(1)
+            : 0
+        },
+        byTariff: tariffBreakdown.rows,
+        bySeason: seasonBreakdown.rows,
+        costComponents: costBreakdown.rows[0]
+      }
+    });
+  } catch (error) {
+    console.error('Consumption breakdown error:', error);
+    res.status(500).json({ success: false, message: 'שגיאה בטעינת פירוט הצריכה' });
+  }
+});
+
+// Analytics - Optimization opportunities
+app.get('/api/analytics/optimization', authenticate, async (req, res) => {
+  try {
+    const { year, month } = req.query;
+    let whereConditions = [];
+    let params = [];
+    let paramIndex = 1;
+
+    if (year) {
+      whereConditions.push(`billing_year = $${paramIndex++}`);
+      params.push(year);
+    }
+    if (month) {
+      whereConditions.push(`billing_month = $${paramIndex++}`);
+      params.push(month);
+    }
+
+    const whereClause = whereConditions.length > 0 ? 'WHERE ' + whereConditions.join(' AND ') : '';
+
+    // Sites with high peak ratio (>70%) - candidates for peak shifting
+    const highPeakSites = await pool.query(`
+      SELECT
+        site_name,
+        site_id,
+        tariff_type,
+        SUM(total_cost) as total_cost,
+        SUM(peak_consumption) as peak_consumption,
+        SUM(offpeak_consumption) as offpeak_consumption,
+        CASE WHEN SUM(total_consumption) > 0
+          THEN (SUM(peak_consumption) / SUM(total_consumption) * 100)
+          ELSE 0
+        END as peak_ratio
+      FROM site_billing_records
+      ${whereClause}
+      GROUP BY site_name, site_id, tariff_type
+      HAVING CASE WHEN SUM(total_consumption) > 0
+        THEN (SUM(peak_consumption) / SUM(total_consumption) * 100)
+        ELSE 0
+      END > 70
+      ORDER BY peak_ratio DESC
+      LIMIT 20
+    `, params);
+
+    // Sites on General tariff with significant consumption (might benefit from TOU)
+    const tariffWhereClause = whereConditions.length > 0
+      ? 'WHERE ' + whereConditions.join(' AND ') + ' AND tariff_type = \'General\''
+      : 'WHERE tariff_type = \'General\'';
+
+    const tariffMismatch = await pool.query(`
+      SELECT
+        site_name,
+        site_id,
+        SUM(total_cost) as total_cost,
+        SUM(total_consumption) as total_consumption,
+        AVG(total_cost) as avg_monthly_cost
+      FROM site_billing_records
+      ${tariffWhereClause}
+      GROUP BY site_name, site_id
+      HAVING SUM(total_consumption) > 1000
+      ORDER BY total_cost DESC
+      LIMIT 15
+    `, params);
+
+    // Total potential savings from discounts
+    const discountSavings = await pool.query(`
+      SELECT
+        SUM(total_discount) as total_saved,
+        SUM(total_cost_without_discount) as total_before_discount,
+        CASE WHEN SUM(total_cost_without_discount) > 0
+          THEN (SUM(total_discount) / SUM(total_cost_without_discount) * 100)
+          ELSE 0
+        END as discount_rate
+      FROM site_billing_records
+      ${whereClause}
+    `, params);
+
+    res.json({
+      success: true,
+      data: {
+        peakShiftingCandidates: highPeakSites.rows,
+        tariffOptimization: tariffMismatch.rows,
+        discountSavings: discountSavings.rows[0]
+      }
+    });
+  } catch (error) {
+    console.error('Optimization analytics error:', error);
+    res.status(500).json({ success: false, message: 'שגיאה בטעינת הזדמנויות אופטימיזציה' });
+  }
+});
+
+// Analytics - Site detail history
+app.get('/api/analytics/site/:siteId', authenticate, async (req, res) => {
+  try {
+    const { siteId } = req.params;
+
+    const siteHistory = await pool.query(`
+      SELECT
+        billing_period,
+        billing_month,
+        billing_year,
+        season,
+        total_cost,
+        total_consumption,
+        peak_consumption,
+        offpeak_consumption,
+        total_discount,
+        kva_cost,
+        distribution_cost,
+        supply_cost
+      FROM site_billing_records
+      WHERE site_id = $1
+      ORDER BY billing_period DESC
+    `, [siteId]);
+
+    const siteSummary = await pool.query(`
+      SELECT
+        site_name,
+        site_id,
+        meter_number,
+        tariff_type,
+        meter_connection,
+        MAX(kva) as kva,
+        SUM(total_cost) as total_cost,
+        SUM(total_consumption) as total_consumption,
+        AVG(total_cost) as avg_monthly_cost,
+        MIN(billing_period) as first_period,
+        MAX(billing_period) as last_period
+      FROM site_billing_records
+      WHERE site_id = $1
+      GROUP BY site_name, site_id, meter_number, tariff_type, meter_connection
+    `, [siteId]);
+
+    res.json({
+      success: true,
+      data: {
+        summary: siteSummary.rows[0],
+        history: siteHistory.rows
+      }
+    });
+  } catch (error) {
+    console.error('Site detail error:', error);
+    res.status(500).json({ success: false, message: 'שגיאה בטעינת פרטי האתר' });
   }
 });
 

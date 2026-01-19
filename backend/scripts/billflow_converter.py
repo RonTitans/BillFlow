@@ -1,6 +1,7 @@
 """
 BillFlow CSV to TSV Converter
 Converts electricity billing CSV files to TSV format with PERFECT total matching.
+Also extracts site-level records for analytics database storage.
 """
 import pandas as pd
 import numpy as np
@@ -8,6 +9,136 @@ from datetime import datetime
 import sys
 import json
 import os
+
+
+def extract_site_records(df, billing_period, billing_month, billing_year):
+    """
+    Extract site-level records from the CSV dataframe for database storage.
+    Returns a list of dictionaries with site billing data for analytics.
+    """
+    site_records = []
+
+    for _, row in df.iterrows():
+        # Parse dates
+        from_date = str(row["From"])
+        to_date = str(row["To"])
+        try:
+            period_start = pd.to_datetime(from_date, format='%d/%m/%Y').strftime('%Y-%m-%d')
+            period_end = pd.to_datetime(to_date, format='%d/%m/%Y').strftime('%Y-%m-%d')
+        except:
+            try:
+                period_start = pd.to_datetime(from_date, format='%m/%d/%Y').strftime('%Y-%m-%d')
+                period_end = pd.to_datetime(to_date, format='%m/%d/%Y').strftime('%Y-%m-%d')
+            except:
+                period_start = None
+                period_end = None
+
+        # Safe numeric conversion
+        def safe_float(val, default=0):
+            try:
+                if pd.isna(val):
+                    return default
+                return float(str(val).replace(',', ''))
+            except:
+                return default
+
+        def safe_int(val, default=0):
+            try:
+                if pd.isna(val):
+                    return default
+                return int(float(str(val).replace(',', '')))
+            except:
+                return default
+
+        # Determine tariff type from Tariff ID
+        tariff_id = str(row.get("Tariff ID", "")).upper()
+        if "TOU MV" in tariff_id:
+            tariff_type = "TOU MV"
+        elif "TOU" in tariff_id:
+            tariff_type = "TOU LV"
+        elif "RESIDENTIAL" in tariff_id:
+            tariff_type = "Residential"
+        elif "STREETLIGHT" in tariff_id:
+            tariff_type = "Streetlight"
+        elif "GENERAL" in tariff_id:
+            tariff_type = "General"
+        else:
+            tariff_type = tariff_id if tariff_id else "Unknown"
+
+        # Extract peak and off-peak consumption
+        peak_consumption = safe_float(row.get('Peak consumption', 0))
+        offpeak_consumption = safe_float(row.get('Off-peak consumption', 0))
+        total_consumption = peak_consumption + offpeak_consumption
+
+        record = {
+            # Site identification
+            'site_name': str(row.get('Site name', '')),
+            'site_id': str(row.get('Site ID', '')).strip("'"),
+            'meter_number': str(row.get('Meter IEC long number', '')).strip("'"),
+            'contract_number': str(row.get('Contract number', '')).strip("'") if row.get('Contract number') else None,
+
+            # Time period
+            'billing_period': billing_period,
+            'billing_month': billing_month,
+            'billing_year': billing_year,
+            'season': str(row.get('Season', '')),
+            'period_start': period_start,
+            'period_end': period_end,
+
+            # Classification
+            'business_entity': str(row.get('Business entity', '')),
+            'tariff_type': tariff_type,
+            'meter_connection': str(row.get('Meter connection', '')),
+            'priority': safe_int(row.get('Priority', 0)),
+
+            # Infrastructure
+            'kva': safe_float(row.get('KVA', 0)),
+            'transformer_units': safe_int(row.get('Transformer unit', 1)),
+
+            # Consumption (kWh)
+            'peak_consumption': peak_consumption,
+            'offpeak_consumption': offpeak_consumption,
+            'total_consumption': total_consumption,
+
+            # Tariffs (rates)
+            'tou_tariff_peak': safe_float(row.get('TOU tariff peak', 0)),
+            'tou_tariff_offpeak': safe_float(row.get('TOU tariff off-peak', 0)),
+            'gc_tariff_peak': safe_float(row.get('GC tariff peak', 0)),
+            'gc_tariff_offpeak': safe_float(row.get('GC tariff off-peak', 0)),
+
+            # Cost components (ILS)
+            'kva_cost': safe_float(row.get('KVA cost', 0)),
+            'distribution_cost': safe_float(row.get('Distribution', 0)),
+            'supply_cost': safe_float(row.get('Supply', 0)),
+            'consumption_cost_peak': safe_float(row.get('Energy cost peak by TOU tariff', 0)),
+            'consumption_cost_offpeak': safe_float(row.get('Energy cost off-peak by TOU tariff', 0)),
+
+            # Totals (ILS)
+            'total_cost': safe_float(row.get('Total cost', 0)),
+            'total_cost_vat': safe_float(row.get('Total cost VAT', 0)),
+            'total_cost_without_discount': safe_float(row.get('Total cost without discount', 0)),
+
+            # Discounts (ILS)
+            'total_discount': safe_float(row.get('Total discount (ILS)', 0)),
+            'discount_peak': safe_float(row.get('Total discount peak (ILS)', 0)),
+            'discount_offpeak': safe_float(row.get('Total discount off-peak (ILS)', 0)),
+            'discount_from_gc_peak': safe_float(row.get('Discount from GC peak', 0)),
+            'discount_from_gc_offpeak': safe_float(row.get('Discount from GC off-peak', 0)),
+
+            # Quality metrics
+            'availability_current': safe_float(row.get('Current availability', 0)),
+            'availability_previous': safe_float(row.get('Previous availability', 0)),
+            'availability_guaranteed': safe_float(row.get('Guaranteed availability', 0)),
+            'power_factor_fine': safe_float(row.get('Power factor fine', 0)),
+
+            # Reference
+            'document_number': str(int(row.get('Document number', 0))) if row.get('Document number') else None,
+        }
+
+        site_records.append(record)
+
+    return site_records
+
 
 def convert_csv_to_tsv(csv_file, output_dir=None):
     """
@@ -336,6 +467,10 @@ def convert_csv_to_tsv(csv_file, output_dir=None):
     total_with_vat = included['סכום כולל מע"מ'].sum()
     csv_total = df['Total cost'].sum()
 
+    # Extract site records for analytics database
+    billing_period = first_date.strftime('%Y-%m')
+    site_records = extract_site_records(df, billing_period, int(first_date.month), int(first_date.year))
+
     # Return results as JSON
     # Return only filenames (not full paths) for backend to construct relative paths
     results = {
@@ -347,14 +482,16 @@ def convert_csv_to_tsv(csv_file, output_dir=None):
         'perfect_match': bool(abs(csv_total - total_sum) < 1),
         'total_rows': len(result_df),
         'included_rows': len(included),
+        'site_count': len(site_records),
         'billing_month': int(first_date.month),
         'billing_year': int(first_date.year),
-        'billing_period': first_date.strftime('%Y-%m'),
+        'billing_period': billing_period,
         'tsv_filename': tsv_filename,
         'tsv_path': tsv_path,
         'excel_filename': excel_filename,
         'excel_path': excel_path,
-        'month_display': month_year_display
+        'month_display': month_year_display,
+        'site_records': site_records  # Include site data for database insertion
     }
 
     return results

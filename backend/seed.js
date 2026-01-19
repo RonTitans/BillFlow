@@ -230,6 +230,47 @@ async function seed() {
             ]
           );
 
+          // Insert site billing records for analytics
+          if (results.site_records && results.site_records.length > 0) {
+            let siteCount = 0;
+            for (const site of results.site_records) {
+              try {
+                await client.query(
+                  `INSERT INTO site_billing_records (
+                    file_upload_id, site_name, site_id, meter_number, contract_number,
+                    billing_period, billing_month, billing_year, season, period_start, period_end,
+                    business_entity, tariff_type, meter_connection, priority,
+                    kva, transformer_units,
+                    peak_consumption, offpeak_consumption, total_consumption,
+                    tou_tariff_peak, tou_tariff_offpeak, gc_tariff_peak, gc_tariff_offpeak,
+                    kva_cost, distribution_cost, supply_cost, consumption_cost_peak, consumption_cost_offpeak,
+                    total_cost, total_cost_vat, total_cost_without_discount,
+                    total_discount, discount_peak, discount_offpeak, discount_from_gc_peak, discount_from_gc_offpeak,
+                    availability_current, availability_previous, availability_guaranteed, power_factor_fine,
+                    document_number
+                  ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42)`,
+                  [
+                    fileId, site.site_name, site.site_id, site.meter_number, site.contract_number,
+                    site.billing_period, site.billing_month, site.billing_year, site.season, site.period_start, site.period_end,
+                    site.business_entity, site.tariff_type, site.meter_connection, site.priority,
+                    site.kva, site.transformer_units,
+                    site.peak_consumption, site.offpeak_consumption, site.total_consumption,
+                    site.tou_tariff_peak, site.tou_tariff_offpeak, site.gc_tariff_peak, site.gc_tariff_offpeak,
+                    site.kva_cost, site.distribution_cost, site.supply_cost, site.consumption_cost_peak, site.consumption_cost_offpeak,
+                    site.total_cost, site.total_cost_vat, site.total_cost_without_discount,
+                    site.total_discount, site.discount_peak, site.discount_offpeak, site.discount_from_gc_peak, site.discount_from_gc_offpeak,
+                    site.availability_current, site.availability_previous, site.availability_guaranteed, site.power_factor_fine,
+                    site.document_number
+                  ]
+                );
+                siteCount++;
+              } catch (siteError) {
+                console.log(`    - Warning: Failed to insert site ${site.site_name}: ${siteError.message}`);
+              }
+            }
+            console.log(`  - Inserted ${siteCount} site records`);
+          }
+
           totalAmount += results.csv_total || 0;
           successCount++;
           console.log(`  - Success: ${standardizedName} | ₪${results.csv_total?.toLocaleString() || 0}`);
