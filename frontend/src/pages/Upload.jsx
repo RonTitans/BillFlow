@@ -132,13 +132,16 @@ function Upload() {
     } catch (error) {
       // Provide detailed error messages based on error type
       let errorMessage = 'שגיאה בהעלאת הקובץ'
-      
+
       if (error.response) {
         // Server responded with error
         const status = error.response.status
         const data = error.response.data
-        
-        if (status === 400) {
+
+        if (status === 409 && data.isDuplicate) {
+          // Duplicate billing period detected
+          errorMessage = `${data.message}\n\nקובץ קיים: ${data.existingFile?.name || 'לא ידוע'}\nתקופת חיוב: ${data.existingFile?.billingPeriod || 'לא ידוע'}`
+        } else if (status === 400) {
           if (data.details) {
             errorMessage = data.message + ': ' + data.details
           } else if (data.message) {
@@ -164,7 +167,7 @@ function Upload() {
         // Something else happened
         errorMessage = error.message || 'שגיאה לא צפויה'
       }
-      
+
       setError(errorMessage)
     } finally {
       setUploading(false)

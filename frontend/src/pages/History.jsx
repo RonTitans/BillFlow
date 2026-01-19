@@ -42,7 +42,9 @@ import {
   KeyboardArrowUp,
   Description,
   TableChart,
-  GetApp
+  GetApp,
+  FilterList,
+  CalendarMonth
 } from '@mui/icons-material'
 import axios from 'axios'
 
@@ -56,10 +58,23 @@ function History() {
   const [selectedFile, setSelectedFile] = useState(null)
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [expandedRows, setExpandedRows] = useState(new Set())
+  const [selectedYear, setSelectedYear] = useState('all')
 
   useEffect(() => {
     fetchFiles()
   }, [])
+
+  // Extract unique years from files for the filter
+  const availableYears = React.useMemo(() => {
+    const years = new Set()
+    files.forEach(file => {
+      if (file.billing_period) {
+        const year = file.billing_period.split('-')[0]
+        if (year) years.add(year)
+      }
+    })
+    return Array.from(years).sort((a, b) => b - a) // Sort descending (newest first)
+  }, [files])
 
   const fetchFiles = async () => {
     try {
@@ -255,10 +270,21 @@ function History() {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
   }
 
-  const filteredFiles = files.filter(file =>
-    file.original_filename.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    file.username?.toLowerCase().includes(searchTerm.toLowerCase())
-  )
+  const filteredFiles = files.filter(file => {
+    // Year filter
+    if (selectedYear !== 'all') {
+      const fileYear = file.billing_period?.split('-')[0]
+      if (fileYear !== selectedYear) return false
+    }
+    // Search filter
+    const searchLower = searchTerm.toLowerCase()
+    return (
+      file.original_filename?.toLowerCase().includes(searchLower) ||
+      file.standardized_name?.toLowerCase().includes(searchLower) ||
+      file.username?.toLowerCase().includes(searchLower) ||
+      file.billing_period?.includes(searchTerm)
+    )
+  })
 
   const paginatedFiles = filteredFiles.slice(
     page * rowsPerPage,
@@ -292,8 +318,37 @@ function History() {
 
       <Card sx={{ borderRadius: 3, boxShadow: '0 4px 20px rgba(0,0,0,0.08)' }}>
         <CardContent>
-          <Box sx={{ mb: 3, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            
+          <Box sx={{ mb: 3, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 2 }}>
+            {/* Year Filter */}
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <CalendarMonth sx={{ color: 'text.secondary' }} />
+              <Typography variant="body2" color="text.secondary" sx={{ mr: 1 }}>
+                סינון לפי שנה:
+              </Typography>
+              <Box sx={{ display: 'flex', gap: 0.5 }}>
+                <Chip
+                  label="הכל"
+                  size="small"
+                  variant={selectedYear === 'all' ? 'filled' : 'outlined'}
+                  color={selectedYear === 'all' ? 'primary' : 'default'}
+                  onClick={() => { setSelectedYear('all'); setPage(0) }}
+                  sx={{ cursor: 'pointer' }}
+                />
+                {availableYears.map(year => (
+                  <Chip
+                    key={year}
+                    label={year}
+                    size="small"
+                    variant={selectedYear === year ? 'filled' : 'outlined'}
+                    color={selectedYear === year ? 'primary' : 'default'}
+                    onClick={() => { setSelectedYear(year); setPage(0) }}
+                    sx={{ cursor: 'pointer' }}
+                  />
+                ))}
+              </Box>
+            </Box>
+
+            {/* Search Field */}
             <TextField
               placeholder="חיפוש קבצים..."
               value={searchTerm}
@@ -364,7 +419,7 @@ function History() {
                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                               {getStatusIcon(file.processing_status)}
                               <Typography variant="body2" fontWeight="medium">
-                                {file.original_filename}
+                                {file.standardized_name || file.original_filename}
                               </Typography>
                             </Box>
                           </TableCell>

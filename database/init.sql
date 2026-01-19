@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS file_uploads (
     id SERIAL PRIMARY KEY,
     original_filename VARCHAR(500) NOT NULL,
+    standardized_name VARCHAR(500),
     processed_filename VARCHAR(500),
     tsv_filename VARCHAR(500),
     file_path TEXT NOT NULL,

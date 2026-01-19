@@ -39,8 +39,9 @@ function Dashboard() {
         axios.get('/api/files?limit=5')
       ])
 
-      setStats(statsResponse.data)
-      setRecentFiles(filesResponse.data.slice(0, 5))
+      // API returns { success, data: { stats, recentFiles } }
+      setStats(statsResponse.data.data?.stats || statsResponse.data.stats || statsResponse.data)
+      setRecentFiles(statsResponse.data.data?.recentFiles || filesResponse.data.slice(0, 5))
     } catch (error) {
       setError('שגיאה בטעינת נתוני הדשבורד')
       console.error('Dashboard error:', error)
@@ -140,7 +141,7 @@ function Dashboard() {
               <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <Box>
                   <Typography variant="h4" component="div" fontWeight="bold">
-                    {stats?.totalFiles || 0}
+                    {stats?.total_files || stats?.totalFiles || 0}
                   </Typography>
                   <Typography variant="body2" sx={{ opacity: 0.8 }}>
                     סה"כ קבצים
@@ -168,7 +169,7 @@ function Dashboard() {
               <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <Box>
                   <Typography variant="h4" component="div" fontWeight="bold">
-                    {stats?.filesByStatus?.completed || 0}
+                    {stats?.completed_files || stats?.filesByStatus?.completed || 0}
                   </Typography>
                   <Typography variant="body2" sx={{ opacity: 0.8 }}>
                     קבצים שעובדו
@@ -196,10 +197,10 @@ function Dashboard() {
               <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <Box>
                   <Typography variant="h4" component="div" fontWeight="bold">
-                    {stats?.filesByStatus?.processing || 0}
+                    {stats?.error_files || stats?.filesByStatus?.error || 0}
                   </Typography>
                   <Typography variant="body2" sx={{ opacity: 0.8 }}>
-                    בעיבוד
+                    שגיאות
                   </Typography>
                 </Box>
                 <Schedule sx={{ fontSize: 40, opacity: 0.8 }} />
@@ -224,7 +225,7 @@ function Dashboard() {
               <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <Box>
                   <Typography variant="h4" component="div" fontWeight="bold">
-                    {formatCurrency(stats?.totalAmount).replace('₪', '')}
+                    {formatCurrency(stats?.total_amount || stats?.totalAmount).replace('₪', '')}
                   </Typography>
                   <Typography variant="body2" sx={{ opacity: 0.8 }}>
                     סה"כ סכום ₪
@@ -348,25 +349,25 @@ function Dashboard() {
                     קבצים שהושלמו
                   </Typography>
                   <Typography variant="body2" fontWeight="bold" color="success.main">
-                    {stats?.filesByStatus?.completed || 0}
+                    {stats?.completed_files || stats?.filesByStatus?.completed || 0}
                   </Typography>
                 </Box>
-                
+
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 2 }}>
                   <Typography variant="body2" color="text.secondary">
-                    בתהליך עיבוד
+                    התאמות מושלמות
                   </Typography>
                   <Typography variant="body2" fontWeight="bold" color="warning.main">
-                    {stats?.filesByStatus?.processing || 0}
+                    {stats?.perfect_matches || stats?.filesByStatus?.processing || 0}
                   </Typography>
                 </Box>
-                
+
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 2 }}>
                   <Typography variant="body2" color="text.secondary">
                     שגיאות
                   </Typography>
                   <Typography variant="body2" fontWeight="bold" color="error.main">
-                    {stats?.filesByStatus?.error || 0}
+                    {stats?.error_files || stats?.filesByStatus?.error || 0}
                   </Typography>
                 </Box>
               </Box>

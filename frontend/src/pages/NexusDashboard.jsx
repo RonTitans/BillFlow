@@ -31,7 +31,18 @@ function NexusDashboard() {
         axios.get('/api/files?limit=5')
       ])
 
-      setStats(statsResponse.data.data || statsResponse.data)
+      // Map API snake_case to frontend camelCase
+      const apiStats = statsResponse.data.data?.stats || statsResponse.data.data || statsResponse.data
+      setStats({
+        totalFiles: apiStats.total_files || apiStats.totalFiles || 0,
+        totalAmount: apiStats.total_amount || apiStats.totalAmount || 0,
+        filesByStatus: {
+          completed: apiStats.completed_files || apiStats.filesByStatus?.completed || 0,
+          processing: apiStats.processing_files || apiStats.filesByStatus?.processing || 0,
+          error: apiStats.error_files || apiStats.filesByStatus?.error || 0
+        },
+        perfectMatches: apiStats.perfect_matches || apiStats.perfectMatches || 0
+      })
       const filesData = filesResponse.data.data || filesResponse.data || []
       setRecentFiles(Array.isArray(filesData) ? filesData.slice(0, 5) : [])
     } catch (error) {
@@ -309,7 +320,7 @@ function NexusDashboard() {
                 <tr key={file.id} style={{ borderBottom: '1px solid var(--border-light)', transition: 'background 0.2s' }}
                   onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-default)'}
                   onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}>
-                  <td style={{ padding: '16px 12px', fontSize: 14, fontWeight: 500 }}>{file.original_filename}</td>
+                  <td style={{ padding: '16px 12px', fontSize: 14, fontWeight: 500 }}>{file.standardized_name || file.original_filename}</td>
                   <td style={{ padding: '16px 12px' }}>
                     <span style={{
                       display: 'inline-block',

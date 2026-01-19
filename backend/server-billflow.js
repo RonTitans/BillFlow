@@ -89,6 +89,51 @@ async function initializeDatabase() {
   }
 }
 
+// Hebrew month names mapping
+const hebrewMonths = {
+  1: 'ינואר',
+  2: 'פברואר',
+  3: 'מרץ',
+  4: 'אפריל',
+  5: 'מאי',
+  6: 'יוני',
+  7: 'יולי',
+  8: 'אוגוסט',
+  9: 'ספטמבר',
+  10: 'אוקטובר',
+  11: 'נובמבר',
+  12: 'דצמבר'
+};
+
+// Extract municipality name from filename
+function extractMunicipalityName(filename) {
+  // Common patterns: "עיריית ראשון מרכז", "עיריית ראשון לציון", etc.
+  const muniPatterns = [
+    /עיריית\s+[\u0590-\u05FF\s]+/,  // "עיריית X"
+    /מועצה\s+[\u0590-\u05FF\s]+/,   // "מועצה X"
+  ];
+
+  for (const pattern of muniPatterns) {
+    const match = filename.match(pattern);
+    if (match) {
+      // Clean up the name - remove extra spaces and trailing numbers/dates
+      return match[0].replace(/\s+\d.*$/, '').trim();
+    }
+  }
+
+  // Default to generic name if not found
+  return 'עיריית ראשון לציון';
+}
+
+// Generate standardized Hebrew filename
+function generateStandardizedFilename(originalFilename, billingMonth, billingYear) {
+  const muniName = extractMunicipalityName(originalFilename);
+  const hebrewMonth = hebrewMonths[billingMonth] || `חודש ${billingMonth}`;
+  const shortYear = String(billingYear).slice(-2);
+
+  return `${muniName}-${hebrewMonth}-${shortYear}`;
+}
+
 // Authentication middleware
 const authenticate = async (req, res, next) => {
   try {
@@ -193,6 +238,60 @@ app.get('/api/auth/verify', async (req, res) => {
   }
 });
 
+// Helper function to extract billing info from CSV content
+async function extractBillingInfoFromCSV(filePath) {
+  try {
+    const content = await fs.readFile(filePath, 'utf8');
+    const lines = content.split('\n').filter(line => line.trim());
+
+    if (lines.length < 2) {
+      return null;
+    }
+
+    // Parse header row
+    const headers = lines[0].split(',').map(h => h.trim().replace(/^\uFEFF/, '')); // Remove BOM
+
+    // Find column indices
+    const fromIndex = headers.findIndex(h => h.toLowerCase() === 'from');
+    const toIndex = headers.findIndex(h => h.toLowerCase() === 'to');
+    const customerIndex = headers.findIndex(h => h.toLowerCase() === 'customer name');
+
+    if (fromIndex === -1 && toIndex === -1) {
+      return null;
+    }
+
+    // Parse first data row
+    const firstDataRow = lines[1].split(',');
+
+    // Extract date - use "From" column (format: DD/MM/YYYY)
+    const dateStr = firstDataRow[fromIndex] || firstDataRow[toIndex];
+    const dateMatch = dateStr?.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+
+    if (!dateMatch) {
+      return null;
+    }
+
+    const month = parseInt(dateMatch[2]);
+    const year = parseInt(dateMatch[3]);
+
+    // Extract customer name (municipality)
+    let municipalityName = 'עיריית ראשון לציון';
+    if (customerIndex !== -1 && firstDataRow[customerIndex]) {
+      municipalityName = firstDataRow[customerIndex].replace(/"/g, '').trim();
+    }
+
+    return {
+      billingMonth: month,
+      billingYear: year,
+      billingPeriod: `${year}-${String(month).padStart(2, '0')}`,
+      municipalityName: municipalityName
+    };
+  } catch (error) {
+    console.error('Error extracting billing info from CSV:', error);
+    return null;
+  }
+}
+
 // Upload file
 app.post('/api/upload', authenticate, upload.single('csvFile'), async (req, res) => {
   try {
@@ -202,28 +301,78 @@ app.post('/api/upload', authenticate, upload.single('csvFile'), async (req, res)
 
     const file = req.file;
     const originalName = Buffer.from(file.originalname, 'latin1').toString('utf8');
+    const uploadedFilePath = path.join(__dirname, 'uploads', file.filename);
 
-    // Extract billing period from filename
-    let billingMonth = null, billingYear = null, billingPeriod = null;
+    // Extract billing info from CSV content
+    const csvInfo = await extractBillingInfoFromCSV(uploadedFilePath);
 
-    // Pattern: "XX-YY" where XX is month, YY is year (e.g., "11-25" = November 2025)
-    const monthYearMatch = originalName.match(/(\d{1,2})-(\d{2})/);
-    if (monthYearMatch) {
-      billingMonth = parseInt(monthYearMatch[1]);
-      billingYear = 2000 + parseInt(monthYearMatch[2]);
-      billingPeriod = `${billingYear}-${String(billingMonth).padStart(2, '0')}`;
+    let billingMonth = null, billingYear = null, billingPeriod = null, municipalityName = null;
+
+    if (csvInfo) {
+      billingMonth = csvInfo.billingMonth;
+      billingYear = csvInfo.billingYear;
+      billingPeriod = csvInfo.billingPeriod;
+      municipalityName = csvInfo.municipalityName;
+    } else {
+      // Fallback: Try to extract from filename
+      // Pattern: "XX-YY" where XX is month, YY is year (e.g., "12-25" = December 2025)
+      const monthYearMatch = originalName.match(/(\d{1,2})-(\d{2})/);
+      if (monthYearMatch) {
+        billingMonth = parseInt(monthYearMatch[1]);
+        billingYear = 2000 + parseInt(monthYearMatch[2]);
+        billingPeriod = `${billingYear}-${String(billingMonth).padStart(2, '0')}`;
+      }
+      // Try to extract municipality from filename
+      municipalityName = extractMunicipalityName(originalName);
+    }
+
+    // Generate standardized Hebrew filename
+    let standardizedName = originalName;
+    if (billingMonth && billingYear && municipalityName) {
+      const hebrewMonth = hebrewMonths[billingMonth] || `חודש ${billingMonth}`;
+      const shortYear = String(billingYear).slice(-2);
+      standardizedName = `${municipalityName}-${hebrewMonth}-${shortYear}`;
+    }
+
+    // Check for duplicate billing period (only completed files)
+    if (billingPeriod) {
+      const duplicateCheck = await pool.query(
+        `SELECT id, original_filename, standardized_name, processing_status
+         FROM file_uploads
+         WHERE billing_period = $1 AND user_id = $2 AND processing_status = 'completed'`,
+        [billingPeriod, req.user.id]
+      );
+
+      if (duplicateCheck.rows.length > 0) {
+        // Delete the uploaded file since we're rejecting it
+        await fs.unlink(uploadedFilePath).catch(() => {});
+
+        return res.status(409).json({
+          success: false,
+          isDuplicate: true,
+          message: 'החשבונית הזו כבר נותחה וקיימת במערכת',
+          existingFile: {
+            id: duplicateCheck.rows[0].id,
+            name: duplicateCheck.rows[0].standardized_name || duplicateCheck.rows[0].original_filename,
+            billingPeriod: billingPeriod
+          }
+        });
+      }
     }
 
     const result = await pool.query(
-      `INSERT INTO file_uploads (original_filename, file_path, file_size, user_id, billing_month, billing_year, billing_period)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [originalName, `uploads/${file.filename}`, file.size, req.user.id, billingMonth, billingYear, billingPeriod]
+      `INSERT INTO file_uploads (original_filename, standardized_name, file_path, file_size, user_id, billing_month, billing_year, billing_period)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      [originalName, standardizedName, `uploads/${file.filename}`, file.size, req.user.id, billingMonth, billingYear, billingPeriod]
     );
 
     res.json({
       success: true,
       message: 'הקובץ הועלה בהצלחה',
-      data: result.rows[0]
+      data: {
+        ...result.rows[0],
+        displayName: standardizedName
+      }
     });
   } catch (error) {
     console.error('Upload error:', error);

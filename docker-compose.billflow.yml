@@ -47,6 +47,7 @@ services:
       - ./uploads:/app/uploads
       - ./output:/app/output
       - ./logs:/app/logs
+      - ./seed-data:/app/seed-data
     ports:
       - "5001:5000"  # Use different port to avoid conflicts
     depends_on:
